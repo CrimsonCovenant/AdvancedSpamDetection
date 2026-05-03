@@ -1,35 +1,13 @@
 """
-models/distilbert_model.py
---------------------------
-DistilBERT fine-tuned for binary SMS spam classification.  [1]
-
-Architecture:
-  DistilBERT-base-uncased (6 transformer layers, 768 hidden dim)
-  → [CLS] token representation (last hidden state, position 0)
-  → Pre-classifier FC(768 → 768) + ReLU
-  → Dropout(0.3)
-  → Classifier FC(768 → 2)
-
-Motivation (proposal §1, §2):
-  DistilBERT leverages contextual embeddings and self-attention to
-  capture semantic relationships even with limited tokens [1, 2, 3].
-  Its subword tokenisation (WordPiece) can improve robustness to
-  misspellings and rare words [1, 2], though its effectiveness on
-  highly abbreviated SMS language is an empirical question explored
-  in this comparative study.
+DistilBERT fine-tuned for binary SMS spam classification.
 
   DistilBERT is 40% smaller and 60% faster than BERT-base while
-  retaining ~97% of BERT's performance on GLUE [1].
+  retaining ~97% of BERT's performance on GLUE
 
 Fine-tuning settings:
-  lr = 2e-5  (standard for transformer fine-tuning)
+  lr = 2e-5
   epochs ≤ 5 with early stopping on validation F1
 
-Reference
----------
-[1] V. Sanh, L. Debut, J. Chaumond, and T. Wolf, "DistilBERT: A
-    distilled version of BERT: Smaller, faster, cheaper and lighter,"
-    arXiv:1910.01108, 2019.
 """
 
 import torch
@@ -67,6 +45,37 @@ class DistilBertClassifier(nn.Module):
         cls = F.relu(self.pre_classifier(cls))
         cls = self.dropout(cls)
         return self.classifier(cls)
+
+    def configure_optimizers(self, lr: float = 2e-5, weight_decay: float = 0.01):
+        """
+        Configure AdamW optimizer for this model.
+        AdamW separates weight decay from the gradient update, which is
+        crucial for transformer generalization.
+        """
+        # Exclude bias and LayerNorm weights from weight decay
+        no_decay = ['bias', 'LayerNorm.weight']
+        optimizer_grouped_parameters = [
+            {'params': [p for n, p in self.named_parameters() if not any(nd in n for nd in no_decay)],
+             'weight_decay': weight_decay},
+            {'params': [p for n, p in self.named_parameters() if any(nd in n for nd in no_decay)],
+             'weight_decay': 0.0}
+        ]
+        return torch.optim.AdamW(optimizer_grouped_parameters, lr=lr)
+
+    @staticmethod
+    def suggest_bayesian_hyperparameters(trial):
+        """
+        Define the Bayesian Optimization search space (Optuna) for DistilBERT.
+        Using TPE (Tree-structured Parzen Estimator).
+        """
+        return {
+            "lr": trial.suggest_float("lr", 1e-5, 5e-5, log=True),
+            "epochs": trial.suggest_int("epochs", 4, 8),
+            "warmup": trial.suggest_float("warmup", 0.0, 0.15),
+            "wd": trial.suggest_float("wd", 1e-4, 0.3, log=True),
+            "bs": trial.suggest_categorical("bs", [8, 16, 32]),
+            "cls_dropout": trial.suggest_float("cls_dropout", 0.1, 0.3),
+        }
 
 
 def build_distilbert(model_name: str = DISTILBERT_NAME,

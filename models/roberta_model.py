@@ -1,33 +1,13 @@
 """
-models/roberta_model.py
------------------------
-RoBERTa fine-tuned for binary SMS spam classification.  [2]
-
 Architecture:
   RoBERTa-base (12 transformer layers, 768 hidden dim)
-  → pooler_output  ([CLS] after linear + tanh, built into RoBERTa)
-  → Dropout(0.3)
-  → Classifier FC(768 → 2)
-
-Motivation (proposal §1, §2):
-  RoBERTa represents the high-performance transformer model in this
-  study. It improves on BERT [3] through longer pretraining, larger
-  mini-batches, dynamic masking, and removal of the NSP objective [2].
-  Its byte-level BPE tokeniser (50,000 merges) offers an alternative
-  subword segmentation to DistilBERT's WordPiece, which may behave
-  differently on informal SMS abbreviations — an aspect examined in
-  the comparative analysis.
+  pooler_output ([CLS] after linear + tanh, built into RoBERTa)
+  Dropout(0.3)
+  Classifier FC(768 → 2)
 
 Fine-tuning settings:
   lr = 2e-5  (standard for transformer fine-tuning)
   epochs ≤ 5 with early stopping on validation F1
-
-References
-----------
-[2] Y. Liu et al., "RoBERTa: A robustly optimized BERT pretraining
-    approach," arXiv:1907.11692, 2019.
-[3] J. Devlin et al., "BERT: Pre-training of deep bidirectional
-    transformers for language understanding," NAACL-HLT 2019.
 """
 
 import torch
@@ -53,14 +33,41 @@ class RobertaClassifier(nn.Module):
 
     def forward(self, input_ids, attention_mask=None):
         """
-        input_ids      : (batch, seq_len)
-        attention_mask : (batch, seq_len)
-        returns logits : (batch, num_classes)
+        input_ids: (batch, seq_len)
+        attention_mask: (batch, seq_len)
+        returns logits: (batch, num_classes)
         """
-        out    = self.roberta(input_ids=input_ids,
-                              attention_mask=attention_mask)
-        pooled = out.pooler_output          # (batch, 768)
+        out = self.roberta(input_ids=input_ids, attention_mask=attention_mask)
+        pooled = out.pooler_output  # (batch, 768)
         return self.classifier(self.dropout(pooled))
+
+    def configure_optimizers(self, lr: float = 2e-5, weight_decay: float = 0.01):
+        """
+        Configure AdamW optimizer for this model.
+        AdamW separates weight decay from the gradient update.
+        """
+        no_decay = ['bias', 'LayerNorm.weight']
+        optimizer_grouped_parameters = [
+            {'params': [p for n, p in self.named_parameters() if not any(nd in n for nd in no_decay)],
+             'weight_decay': weight_decay},
+            {'params': [p for n, p in self.named_parameters() if any(nd in n for nd in no_decay)],
+             'weight_decay': 0.0}
+        ]
+        return torch.optim.AdamW(optimizer_grouped_parameters, lr=lr)
+
+    @staticmethod
+    def suggest_bayesian_hyperparameters(trial):
+        """
+        Define the Bayesian Optimization search space (Optuna) for RoBERTa.
+        """
+        return {
+            "lr": trial.suggest_float("lr", 1e-5, 5e-5, log=True),
+            "epochs": trial.suggest_int("epochs", 4, 8),
+            "warmup": trial.suggest_float("warmup", 0.0, 0.15),
+            "wd": trial.suggest_float("wd", 1e-4, 0.3, log=True),
+            "bs": trial.suggest_categorical("bs", [8, 16, 32]),
+            "cls_dropout": trial.suggest_float("cls_dropout", 0.1, 0.3),
+        }
 
 
 def build_roberta(model_name: str = ROBERTA_NAME,
